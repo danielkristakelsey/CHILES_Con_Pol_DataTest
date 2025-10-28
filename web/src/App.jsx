@@ -36,10 +36,12 @@ export default function App() {
   const [asinhK, setAsinhK] = useState(0.1)
   const [hist, setHist] = useState(null)
   const [histDisplay, setHistDisplay] = useState(null)
+  const [histTail, setHistTail] = useState(null)
   const [minCut, setMinCut] = useState(0.0)   // 0..1 of 8-bit scale
   const [maxCut, setMaxCut] = useState(1.0)   // 0..1 of 8-bit scale
   const [maskBelowMin, setMaskBelowMin] = useState(false)
   const [maskAboveMax, setMaskAboveMax] = useState(false)
+  const [tailPct, setTailPct] = useState(99)
 
   useEffect(() => {
     const img = new Image()
@@ -63,6 +65,7 @@ export default function App() {
 
   useEffect(() => { draw() }, [scale, offset])
   useEffect(() => { updateVisibleHistogram() }, [scale, offset, intensity, minCut, maxCut, stretch, invert, maskBelowMin, maskAboveMax])
+  useEffect(() => { if (hist) { setTimeout(() => { renderHist(); renderHistDisplay(); renderHistTail() }, 0) } }, [tailPct, hist])
   useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK, minCut, maxCut, maskBelowMin, maskAboveMax])
   useEffect(() => { renderColorbar() }, [colormap, invert, stretch, gamma, asinhK, minCut, maxCut])
 
@@ -396,6 +399,14 @@ export default function App() {
     ctx.strokeStyle = '#1a2230'; ctx.strokeRect(0.5,0.5,W-1,H-1)
   }
 
+  function applyPercentileWindow(pLo, pHi) {
+    if (!hist?.counts) return
+    const lo = percentileFromCounts(hist.counts, pLo)
+    const hi = percentileFromCounts(hist.counts, pHi)
+    onMinCutChange(Math.round(lo*100))
+    onMaxCutChange(Math.round(hi*100))
+  }
+
   function countsToStats(counts) {
     const total = counts.reduce((a,b)=>a+b,0)
     if (!total) return { mean:0, median:0, std:0 }
@@ -432,6 +443,60 @@ export default function App() {
     ctx.fillText('Histogram (post window/stretch)', 8, 14)
     const st = countsToStats(counts)
     ctx.fillText(`mean ${st.mean.toFixed(3)}, median ${st.median.toFixed(3)}, std ${st.std.toFixed(3)}`, 8, 28)
+  }
+
+  function percentileFromCounts(counts, p) {
+    // p in [0,100]
+    const total = counts.reduce((a,b)=>a+b,0)
+    if (!total) return 0
+    const target = (p/100) * total
+    let cum = 0
+    for (let i=0;i<256;i++) { cum += counts[i]; if (cum >= target) return i/255 }
+    return 1
+  }
+
+  function renderHistTail() {
+    const el = document.getElementById('hist-tail')
+    if (!el || !hist) return
+    const counts = hist.counts
+    const thr = percentileFromCounts(counts, tailPct)
+    const thrIdx = Math.max(0, Math.min(255, Math.round(thr*255)))
+    // build tail-only counts
+    const tcounts = new Array(256).fill(0)
+    let tailTotal = 0
+    for (let i=thrIdx;i<256;i++) { tcounts[i] = counts[i]; tailTotal += counts[i] }
+    setHistTail({ counts: tcounts, thrIdx, tailTotal })
+
+    const ctx = el.getContext('2d')
+    const W = el.width = 320
+    const H = el.height = 140
+    ctx.clearRect(0,0,W,H)
+    const max = Math.max(1, ...tcounts)
+    ctx.fillStyle = '#203047'; ctx.fillRect(0,0,W,H)
+    ctx.strokeStyle = '#3dd68c'; ctx.beginPath()
+    for (let i=0;i<256;i++) {
+      const x = (i/255)*W
+      const y = H - (tcounts[i]/max)*(H-20)
+      if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
+    }
+    ctx.stroke()
+    // threshold marker
+    ctx.strokeStyle = '#9aa4b2'; ctx.beginPath();
+    const tx = (thrIdx/255)*W; ctx.moveTo(tx,0); ctx.lineTo(tx,H); ctx.stroke()
+    ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
+    ctx.fillText(`Upper tail (>= P${tailPct})`, 8, 14)
+    // stats in physical units limited to tail
+    const physMin = meta?.vmin, physMax = meta?.vmax
+    if (physMin !== undefined && physMax !== undefined && tailTotal > 0) {
+      // compute mean in tail
+      let sum = 0
+      let cum = 0
+      for (let i=thrIdx;i<256;i++) { sum += (i/255)*tcounts[i]; cum += tcounts[i] }
+      const meanT = sum / Math.max(1, cum)
+      const meanPhys = physMin + (physMax-physMin)*meanT
+      const thrPhys = physMin + (physMax-physMin)* (thrIdx/255)
+      ctx.fillText(`>= ${thrPhys.toExponential(2)}; mean ${meanPhys.toExponential(2)} (${(cum/Math.max(1,counts.reduce((a,b)=>a+b,0))*100).toFixed(2)}% pixels)`, 8, 28)
+    }
   }
 
   // Slider handlers (0..100 UI mapped to 0..1)
@@ -526,6 +591,19 @@ export default function App() {
             <canvas ref={histCanvasRef} />
             <div className="section-title" style={{marginTop:8}}>Post-Scaling Distribution</div>
             <canvas id="hist-display" />
+            <div className="section-title" style={{marginTop:8}}>Upper Tail (bright sources)</div>
+            <div className="line">
+              <label>Pctl
+                <select value={tailPct} onChange={e => setTailPct(parseFloat(e.target.value))}>
+                  <option value={90}>90</option>
+                  <option value={95}>95</option>
+                  <option value={97.5}>97.5</option>
+                  <option value={99}>99</option>
+                  <option value={99.5}>99.5</option>
+                </select>
+              </label>
+            </div>
+            <canvas id="hist-tail" />
           </div>
         </aside>
       </main>
@@ -567,6 +645,9 @@ export default function App() {
             )}
             <label className="line"><input type="checkbox" checked={maskBelowMin} onChange={e => setMaskBelowMin(e.target.checked)} /> Mask below min</label>
             <label className="line"><input type="checkbox" checked={maskAboveMax} onChange={e => setMaskAboveMax(e.target.checked)} /> Mask above max</label>
+            <span className="section-title" style={{marginLeft:12}}>Quick Window</span>
+            <button className="sidebtn" onClick={() => applyPercentileWindow(2,98)}>2–98%</button>
+            <button className="sidebtn" onClick={() => applyPercentileWindow(5,99)}>5–99%</button>
           </div>
         </div>
       </footer>
