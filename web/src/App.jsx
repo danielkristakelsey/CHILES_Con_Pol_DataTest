@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react'
 
+const BASE = import.meta.env.BASE_URL || '/'
+
 function useMetadata() {
   const [meta, setMeta] = useState(null)
   useEffect(() => {
-    fetch('/metadata.json').then(r => r.json()).then(setMeta)
+    fetch(`${BASE}metadata.json`).then(r => r.json()).then(setMeta)
   }, [])
   return meta
 }
@@ -18,7 +20,7 @@ export default function App() {
 
   useEffect(() => {
     const img = new Image()
-    img.src = '/preview.png'
+    img.src = `${BASE}preview.png`
     img.onload = () => {
       imgRef.current = img
       draw()
