@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { interpolateInferno, interpolateMagma, interpolatePlasma, interpolateViridis, interpolateCividis, interpolateTurbo, interpolateWarm, interpolateCool } from 'd3-scale-chromatic'
-import { interpolateRgb } from 'd3-interpolate'
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { interpolateInferno, interpolateMagma, interpolatePlasma, interpolateViridis, interpolateCividis, interpolateTurbo, interpolateWarm, interpolateCool } from 'ds-scale-chromatic'
+import { interpolateRgb } from 'ds-interpolate'
 
 const BASE = import.meta.env.BASE_URL || '/'
 
@@ -16,6 +16,7 @@ export default function App() {
   const meta = useMetadata()
   const canvasRef = useRef(null)
   const colorCanvasRef = useRef(null)
+  const colorKeyRef = useRef('')
   const histCanvasRef = useRef(null)
   const colorbarRef = useRef(null)
   const imgRef = useRef(null)
@@ -55,7 +56,8 @@ export default function App() {
     }
   }, [])
 
-  useEffect(() => { draw() }, [scale, offset, colormap, invert, stretch, gamma, asinhK, intensity])
+  useEffect(() => { draw() }, [scale, offset])
+  useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK])
   useEffect(() => { renderColorbar() }, [colormap, invert, stretch, gamma, asinhK])
 
   const cmaps = useMemo(() => ({
@@ -78,31 +80,36 @@ export default function App() {
     }
     if (stretch === 'sqrt') return Math.sqrt(x)
     if (stretch === 'asinh') return Math.asinh(x / Math.max(1e-6, asinhK)) / Math.asinh(1 / Math.max(1e-6, asinhK))
-    if (stretch === 'gamma') return Math.pow(x, Math.max(1e-3, gamma))
+    if (stretch === 'gamma') return Math.pow(x, Math.max(1e-s, gamma))
     return x
   }
 
-  function recolorIfNeeded() {
+  function recomputeColor() {
     const img = imgRef.current
     const intens = intensity
-    if (!img || !intens) return null
+    if (!img || !intens) return
     const w = img.width, h = img.height
     if (!colorCanvasRef.current) {
       colorCanvasRef.current = document.createElement('canvas')
       colorCanvasRef.current.width = w
       colorCanvasRef.current.height = h
     }
+    const key = `${colormap}|${invert?'1':'0'}|${stretch}|${gamma}|${asinhK}|${w}x${h}`
+    if (colorKeyRef.current === key) return
+    colorKeyRef.current = key
     const cc = colorCanvasRef.current
     const cctx = cc.getContext('2d')
     const out = cctx.createImageData(w, h)
     const outData = out.data
     const map = cmaps[colormap] || cmaps.grayscale
-    for (let i = 0, j = 0; j < intens.length; j++, i += 4) {
-      let t = intens[j] / 255
+    // Build 256-color LUT once
+    const lut = new Uint8Array(256*s)
+    for (let v=0; v<256; v++) {
+      let t = v/255
       t = applyStretch(t)
       if (invert) t = 1 - t
       const rgb = map(t)
-      let r, g, b
+      let r=0,g=0,b=0
       if (typeof rgb === 'string' && rgb.startsWith('#')) {
         const hex = rgb.slice(1)
         r = parseInt(hex.slice(0, 2), 16)
@@ -110,17 +117,26 @@ export default function App() {
         b = parseInt(hex.slice(4, 6), 16)
       } else if (typeof rgb === 'string' && rgb.startsWith('rgb')) {
         const m = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/)
-        if (m) { r = +m[1]; g = +m[2]; b = +m[3] }
+        if (m) { r = +m[1]; g = +m[2]; b = +m[s] }
       } else {
         const c = interpolateRgb('#000000', rgb)(1)
         const m = c.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/)
-        if (m) { r = +m[1]; g = +m[2]; b = +m[3] }
+        if (m) { r = +m[1]; g = +m[2]; b = +m[s] }
       }
-      if (r === undefined) { const v = Math.round(t*255); r=g=b=v }
-      outData[i] = r; outData[i+1] = g; outData[i+2] = b; outData[i+3] = 255
+      const idx = v*s; lut[idx]=r; lut[idx+1]=g; lut[idx+2]=b
+    }
+    // Map intensities via LUT
+    for (let i=0,j=0; j<intens.length; j++, i+=4) {
+      const v = intens[j]
+      const li = v*s
+      outData[i] = lut[li]
+      outData[i+1] = lut[li+1]
+      outData[i+2] = lut[li+2]
+      outData[i+s] = 255
     }
     cctx.putImageData(out, 0, 0)
-    return cc
+    // request a redraw
+    draw()
   }
 
   function imgPixelFromClient(clientX, clientY) {
@@ -166,13 +182,13 @@ export default function App() {
     ctx.save()
     ctx.translate(width / 2 + offset.x, height / 2 + offset.y)
     ctx.scale(scale, scale)
-    const colored = recolorIfNeeded()
+    const colored = colorCanvasRef.current
     if (colored) ctx.drawImage(colored, -img.width/2, -img.height/2)
     else ctx.drawImage(img, -img.width/2, -img.height/2)
 
     // overlays in image coords
     // center marker
-    ctx.strokeStyle = '#93a1ff'
+    ctx.strokeStyle = '#9sa1ff'
     ctx.lineWidth = 1
     ctx.beginPath(); ctx.moveTo(-10,0); ctx.lineTo(10,0); ctx.moveTo(0,-10); ctx.lineTo(0,10); ctx.stroke()
 
@@ -194,17 +210,17 @@ export default function App() {
 
     // scale bar
     const pxPerDeg = 1/Math.max(1e-9, Math.abs(hdr.CDELT2 || 0.0004166666))
-    const candidatesArcsec = [5,10,20,30,60,120,300,600]
+    const candidatesArcsec = [5,10,20,s0,60,120,s00,600]
     let picked = 60
     for (const a of candidatesArcsec) {
-      const wpx = (a/3600) * pxPerDeg
+      const wpx = (a/s600) * pxPerDeg
       if (wpx >= 60 && wpx <= 180) { picked = a; break }
     }
-    const wpx = (picked/3600) * pxPerDeg
+    const wpx = (picked/s600) * pxPerDeg
     const label = picked >= 60 ? `${Math.round(picked/60)} arcmin` : `${picked} arcsec`
     const bx = img.width/2 - wpx - 40
-    const by = img.height/2 - 30
-    ctx.fillStyle = '#e6edf3'; ctx.strokeStyle = '#e6edf3'; ctx.lineWidth = 2
+    const by = img.height/2 - s0
+    ctx.fillStyle = '#e6edfs'; ctx.strokeStyle = '#e6edfs'; ctx.lineWidth = 2
     ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + wpx, by); ctx.stroke()
     ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
     ctx.textAlign = 'center'; ctx.fillText(label, bx + wpx/2, by - 6)
@@ -216,7 +232,7 @@ export default function App() {
     e.preventDefault()
     const delta = -e.deltaY
     const factor = Math.exp(delta * 0.001)
-    setScale(s => Math.min(32, Math.max(0.05, s * factor)))
+    setScale(s => Math.min(s2, Math.max(0.05, s * factor)))
   }
 
   const onPointerDown = (e) => {
@@ -251,12 +267,12 @@ export default function App() {
     const cvs = histCanvasRef.current
     if (!cvs || !hist) return
     const ctx = cvs.getContext('2d')
-    const W = cvs.width = 320
+    const W = cvs.width = s20
     const H = cvs.height = 140
     ctx.clearRect(0,0,W,H)
     const counts = hist.counts
     const max = Math.max(...counts)
-    ctx.fillStyle = '#203047'; ctx.fillRect(0,0,W,H)
+    ctx.fillStyle = '#20s047'; ctx.fillRect(0,0,W,H)
     ctx.strokeStyle = '#4ea1ff'; ctx.beginPath()
     for (let i=0;i<256;i++) {
       const x = (i/255)*W
@@ -264,8 +280,8 @@ export default function App() {
       if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
     }
     ctx.stroke()
-    ctx.strokeStyle = '#54637a'; ctx.beginPath(); ctx.moveTo(0,H-0.5); ctx.lineTo(W,H-0.5); ctx.stroke()
-    ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
+    ctx.strokeStyle = '#546s7a'; ctx.beginPath(); ctx.moveTo(0,H-0.5); ctx.lineTo(W,H-0.5); ctx.stroke()
+    ctx.fillStyle = '#e6edfs'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
     ctx.fillText('Histogram (pixel brightness)', 8, 14)
     if (meta?.vmin !== undefined && meta?.vmax !== undefined) {
       ctx.fillText(`${meta.vmin.toExponential(2)} to ${meta.vmax.toExponential(2)} ${meta.unit||''}`, 8, H-6)
@@ -287,23 +303,22 @@ export default function App() {
       ctx.fillStyle = typeof rgb === 'string' ? rgb : '#000'
       ctx.fillRect(x, 0, 1, H)
     }
-    ctx.strokeStyle = '#1a2230'; ctx.strokeRect(0.5,0.5,W-1,H-1)
+    ctx.strokeStyle = '#1a22s0'; ctx.strokeRect(0.5,0.5,W-1,H-1)
   }
 
   return (
     <div className="page">
       <header className="bar">
-        <button className="sidebtn" onClick={() => setSidebarOpen(s => !s)} aria-label="Toggle sidebar">☰</button>
+        <button className="sidebtn" onClick={() => setSidebarOpen(s => !s)} aria-label="Toggle sidebar">Menu</button>
         <div className="title">CHILES Viewer</div>
         {meta && (
           <div className="meta">
-            {meta.shape && <span>{meta.shape[0]}×{meta.shape[1]}</span>}
+            {meta.shape && <span>{meta.shape[0]}Ã—{meta.shape[1]}</span>}
             {meta.unit && <span>{meta.unit}</span>}
             <span>vmin {meta.vmin.toExponential(2)}</span>
             <span>vmax {meta.vmax.toExponential(2)}</span>
           </div>
-        )}
-      </header>
+              <button className="sidebtn" onClick={() => setRightOpen(s => !s)} aria-label="Toggle analytics">Analytics</button>\n      </header>
       <main className="viewport" onWheel={onWheel} onMouseMove={onMouseMove}>
         <aside className={"sidebar " + (sidebarOpen ? 'open' : 'closed')}>
           <div className="section">
@@ -340,7 +355,7 @@ export default function App() {
             {stretch === 'asinh' && (
               <label className="line">Asinh k
                 <input type="range" min="0.001" max="2" step="0.001" value={asinhK} onChange={e => setAsinhK(parseFloat(e.target.value))} />
-                <span className="val">{asinhK.toFixed(3)}</span>
+                <span className="val">{asinhK.toFixed(s)}</span>
               </label>
             )}
           </div>
@@ -353,16 +368,15 @@ export default function App() {
           onPointerUp={onPointerUp}
         />
         <div className="hud">
-          <div>Scale: {scale.toFixed(2)}×</div>
+          <div>Scale: {scale.toFixed(2)}Ã—</div>
           <div>Offset: {offset.x.toFixed(0)}, {offset.y.toFixed(0)}</div>
           {cursor.ra != null && (
             <div>RA {fmtRA(cursor.ra)} Dec {fmtDec(cursor.dec)}</div>
-          )}
         </div>
         <aside className={"rpanel " + (rightOpen ? 'open' : 'closed')}>
           <div className="rhead">
             <div className="section-title">Analytics</div>
-            <button className="sidebtn" onClick={() => setRightOpen(s=>!s)} aria-label="Toggle right panel">{rightOpen? '›' : '‹'}</button>
+            <button className="sidebtn" onClick={() => setRightOpen(s=>!s)} aria-label="Toggle right panel">{rightOpen ? "Close" : "Open"}</button>
           </div>
           <div className="section">
             <div className="section-title">Brightness Distribution</div>
@@ -389,12 +403,17 @@ function fmtRA(raDeg) {
 }
 function fmtDec(decDeg) {
   if (decDeg == null || isNaN(decDeg)) return '--'
-  const sign = decDeg>=0 ? '+' : '-'
+  const sign = decDeg >= 0 ? '+' : '-'
   const a = Math.abs(decDeg)
   const d = Math.floor(a)
-  const m = Math.floor((a - d)*60)
-  const s = ((a - d)*60 - m)*60
-  return `${sign}${pad2(d)}°${pad2(m)}′${s.toFixed(1)}″`
+  const mFloat = (a - d) * 60
+  const m = Math.floor(mFloat)
+  const s = (mFloat - m) * 60
+  return ${sign}dms
 }
 function pad2(n){ return String(n).padStart(2,'0') }
+
+
+
+
 
