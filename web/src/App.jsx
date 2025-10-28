@@ -39,6 +39,7 @@ export default function App() {
   const [minCut, setMinCut] = useState(0.0)   // 0..1 of 8-bit scale
   const [maxCut, setMaxCut] = useState(1.0)   // 0..1 of 8-bit scale
   const [maskBelowMin, setMaskBelowMin] = useState(false)
+  const [maskAboveMax, setMaskAboveMax] = useState(false)
 
   useEffect(() => {
     const img = new Image()
@@ -61,8 +62,8 @@ export default function App() {
   }, [])
 
   useEffect(() => { draw() }, [scale, offset])
-  useEffect(() => { updateVisibleHistogram() }, [scale, offset, intensity, minCut, maxCut, stretch, invert, maskBelowMin])
-  useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK, minCut, maxCut, maskBelowMin])
+  useEffect(() => { updateVisibleHistogram() }, [scale, offset, intensity, minCut, maxCut, stretch, invert, maskBelowMin, maskAboveMax])
+  useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK, minCut, maxCut, maskBelowMin, maskAboveMax])
   useEffect(() => { renderColorbar() }, [colormap, invert, stretch, gamma, asinhK, minCut, maxCut])
 
   const cmaps = useMemo(() => ({
@@ -99,7 +100,7 @@ export default function App() {
       colorCanvasRef.current.width = w
       colorCanvasRef.current.height = h
     }
-    const key = `${colormap}|${invert?'1':'0'}|${stretch}|${gamma}|${asinhK}|${minCut.toFixed(3)}|${maxCut.toFixed(3)}|${maskBelowMin?'1':'0'}|${w}x${h}`
+    const key = `${colormap}|${invert?'1':'0'}|${stretch}|${gamma}|${asinhK}|${minCut.toFixed(3)}|${maxCut.toFixed(3)}|${maskBelowMin?'1':'0'}|${maskAboveMax?'1':'0'}|${w}x${h}`
     if (colorKeyRef.current === key) return
     colorKeyRef.current = key
     const cc = colorCanvasRef.current
@@ -118,7 +119,10 @@ export default function App() {
         if (maskBelowMin) { alpha = 0; t = 0 }
         else { t = 0 }
       }
-      if (t >= 1) t = 1
+      if (t >= 1) {
+        if (maskAboveMax) { alpha = 0; t = 1 }
+        else { t = 1 }
+      }
       t = applyStretch(t)
       if (invert) t = 1 - t
       const rgb = map(t)
@@ -301,7 +305,7 @@ export default function App() {
         let t = v/255
         t = (t - minCut) / Math.max(1e-6, (maxCut - minCut))
         if (t <= 0) { if (maskBelowMin) continue; t = 0 }
-        if (t >= 1) t = 1
+        if (t >= 1) { if (maskAboveMax) continue; t = 1 }
         t = applyStretch(t)
         if (invert) t = 1 - t
         const b = Math.max(0, Math.min(255, Math.round(t*255)))
@@ -562,6 +566,7 @@ export default function App() {
               </>
             )}
             <label className="line"><input type="checkbox" checked={maskBelowMin} onChange={e => setMaskBelowMin(e.target.checked)} /> Mask below min</label>
+            <label className="line"><input type="checkbox" checked={maskAboveMax} onChange={e => setMaskAboveMax(e.target.checked)} /> Mask above max</label>
           </div>
         </div>
       </footer>
