@@ -34,3 +34,6 @@ html, body, #root {
 .rpanel { position: absolute; top: 0; right: 0; bottom: 0; width: 360px; background: rgba(15,19,26,0.98); border-left: 1px solid #1a2230; padding: 12px; transform: translateX(0); transition: transform 160ms ease; overflow-y: auto; }
 .rpanel.closed { transform: translateX(100%); }
 .rhead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.bottom-controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
+.bottom-controls .line { gap: 10px; }
+.bottom-controls input[type="range"] { width: 160px; }

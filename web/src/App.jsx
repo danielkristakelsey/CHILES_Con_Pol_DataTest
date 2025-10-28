@@ -35,6 +35,8 @@ export default function App() {
   const [gamma, setGamma] = useState(1.0)
   const [asinhK, setAsinhK] = useState(0.1)
   const [hist, setHist] = useState(null)
+  const [minCut, setMinCut] = useState(0.0)   // 0..1 of 8-bit scale
+  const [maxCut, setMaxCut] = useState(1.0)   // 0..1 of 8-bit scale
 
   useEffect(() => {
     const img = new Image()
@@ -58,8 +60,8 @@ export default function App() {
 
   useEffect(() => { draw() }, [scale, offset])
   useEffect(() => { updateVisibleHistogram() }, [scale, offset, intensity])
-  useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK])
-  useEffect(() => { renderColorbar() }, [colormap, invert, stretch, gamma, asinhK])
+  useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK, minCut, maxCut])
+  useEffect(() => { renderColorbar() }, [colormap, invert, stretch, gamma, asinhK, minCut, maxCut])
 
   const cmaps = useMemo(() => ({
     grayscale: (t) => `rgb(${Math.round(t*255)},${Math.round(t*255)},${Math.round(t*255)})`,
@@ -95,7 +97,7 @@ export default function App() {
       colorCanvasRef.current.width = w
       colorCanvasRef.current.height = h
     }
-    const key = `${colormap}|${invert?'1':'0'}|${stretch}|${gamma}|${asinhK}|${w}x${h}`
+    const key = `${colormap}|${invert?'1':'0'}|${stretch}|${gamma}|${asinhK}|${minCut.toFixed(3)}|${maxCut.toFixed(3)}|${w}x${h}`
     if (colorKeyRef.current === key) return
     colorKeyRef.current = key
     const cc = colorCanvasRef.current
@@ -103,10 +105,13 @@ export default function App() {
     const out = cctx.createImageData(w, h)
     const outData = out.data
     const map = cmaps[colormap] || cmaps.grayscale
-    // Build 256-color LUT once
+    // Build 256-color LUT once (includes min/max cuts)
     const lut = new Uint8Array(256*3)
     for (let v=0; v<256; v++) {
       let t = v/255
+      // apply min/max window
+      t = (t - minCut) / Math.max(1e-6, (maxCut - minCut))
+      if (t < 0) t = 0; if (t > 1) t = 1
       t = applyStretch(t)
       if (invert) t = 1 - t
       const rgb = map(t)
@@ -351,6 +356,7 @@ export default function App() {
     const map = cmaps[colormap] || cmaps.grayscale
     for (let x=0;x<W;x++) {
       let t = x/(W-1)
+      // colorbar shows post-cut normalized space
       t = applyStretch(t)
       if (invert) t = 1 - t
       const rgb = map(t)
@@ -358,6 +364,18 @@ export default function App() {
       ctx.fillRect(x, 0, 1, H)
     }
     ctx.strokeStyle = '#1a2230'; ctx.strokeRect(0.5,0.5,W-1,H-1)
+  }
+
+  // Slider handlers (0..100 UI mapped to 0..1)
+  function onMinCutChange(pct) {
+    let v = Math.max(0, Math.min(100, pct)) / 100
+    if (v > maxCut - 0.01) v = Math.max(0, maxCut - 0.01)
+    setMinCut(v)
+  }
+  function onMaxCutChange(pct) {
+    let v = Math.max(0, Math.min(100, pct)) / 100
+    if (v < minCut + 0.01) v = Math.min(1, minCut + 0.01)
+    setMaxCut(v)
   }
 
   return (
@@ -442,8 +460,24 @@ export default function App() {
         </aside>
       </main>
       <footer className="foot">
-        <div>
-          Dark theme. Mouse wheel to zoom; drag to pan.
+        <div>Dark theme. Wheel zoom focuses on cursor; drag to pan.</div>
+        <div className="bottom-controls">
+          <div className="line">
+            <span className="section-title">Brightness</span>
+            <label>Min
+              <input type="range" min="0" max="100" step="1" value={Math.round(minCut*100)} onChange={e => onMinCutChange(parseInt(e.target.value,10))} />
+              <span className="val">{Math.round(minCut*100)}%</span>
+            </label>
+            <label>Max
+              <input type="range" min="0" max="100" step="1" value={Math.round(maxCut*100)} onChange={e => onMaxCutChange(parseInt(e.target.value,10))} />
+              <span className="val">{Math.round(maxCut*100)}%</span>
+            </label>
+            {meta?.vmin !== undefined && meta?.vmax !== undefined && (
+              <span className="val">
+                [{(meta.vmin + (meta.vmax-meta.vmin)*minCut).toExponential(2)} … {(meta.vmax - (meta.vmax-meta.vmin)*(1-maxCut)).toExponential(2)} {meta.unit||''}]
+              </span>
+            )}
+          </div>
         </div>
       </footer>
     </div>
