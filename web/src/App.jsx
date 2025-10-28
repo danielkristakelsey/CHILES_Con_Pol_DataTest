@@ -57,6 +57,7 @@ export default function App() {
   }, [])
 
   useEffect(() => { draw() }, [scale, offset])
+  useEffect(() => { updateVisibleHistogram() }, [scale, offset, intensity])
   useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK])
   useEffect(() => { renderColorbar() }, [colormap, invert, stretch, gamma, asinhK])
 
@@ -230,9 +231,62 @@ export default function App() {
 
   const onWheel = (e) => {
     e.preventDefault()
+    const canvas = canvasRef.current
+    const img = imgRef.current
+    if (!canvas || !img) return
+    const rect = canvas.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    const cx = canvas.clientWidth / 2
+    const cy = canvas.clientHeight / 2
     const delta = -e.deltaY
     const factor = Math.exp(delta * 0.001)
-    setScale(s => Math.min(32, Math.max(0.05, s * factor)))
+    setScale(prevScale => {
+      const newScale = Math.min(32, Math.max(0.05, prevScale * factor))
+      // keep point under cursor fixed
+      const ix = (x - cx - offset.x) / prevScale + img.width / 2
+      const iy = (y - cy - offset.y) / prevScale + img.height / 2
+      const newOffsetX = x - cx - (ix - img.width / 2) * newScale
+      const newOffsetY = y - cy - (iy - img.height / 2) * newScale
+      setOffset({ x: newOffsetX, y: newOffsetY })
+      return newScale
+    })
+  }
+
+  function updateVisibleHistogram() {
+    const canvas = canvasRef.current
+    const img = imgRef.current
+    const intens = intensity
+    if (!canvas || !img || !intens) return
+    const Wc = canvas.clientWidth
+    const Hc = canvas.clientHeight
+    const cx = Wc / 2
+    const cy = Hc / 2
+    const iw = img.width
+    const ih = img.height
+    // image bounds visible in image coords
+    let ix0 = iw / 2 + (0 - cx - offset.x) / scale
+    let ix1 = iw / 2 + (Wc - cx - offset.x) / scale
+    let iy0 = ih / 2 + (0 - cy - offset.y) / scale
+    let iy1 = ih / 2 + (Hc - cy - offset.y) / scale
+    ix0 = Math.max(0, Math.floor(Math.min(ix0, ix1)))
+    ix1 = Math.min(iw - 1, Math.ceil(Math.max(ix0, ix1)))
+    iy0 = Math.max(0, Math.floor(Math.min(iy0, iy1)))
+    iy1 = Math.min(ih - 1, Math.ceil(Math.max(iy0, iy1)))
+    if (ix1 <= ix0 || iy1 <= iy0) return
+    // sampling step to keep cost bounded
+    const approxPixels = (ix1 - ix0) * (iy1 - iy0)
+    const targetSamples = 160000
+    const step = Math.max(1, Math.floor(Math.sqrt(approxPixels / targetSamples)))
+    const counts = new Array(256).fill(0)
+    for (let y = iy0; y <= iy1; y += step) {
+      const row = y * iw
+      for (let x = ix0; x <= ix1; x += step) {
+        counts[intens[row + x]]++
+      }
+    }
+    setHist({ counts })
+    setTimeout(renderHist, 0)
   }
 
   const onPointerDown = (e) => {
@@ -415,4 +469,3 @@ function fmtDec(decDeg) {
   return `${sign}${pad2(d)}d${pad2(m)}m${s.toFixed(1)}s`
 }
 function pad2(n){ return String(n).padStart(2,'0') }
-
