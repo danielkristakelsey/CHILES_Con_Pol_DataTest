@@ -43,6 +43,14 @@ export default function App() {
   const [maskAboveMax, setMaskAboveMax] = useState(false)
   const [tailPct, setTailPct] = useState(99)
 
+  // Modal state for chart pop-out
+  const [modalOpen, setModalOpen] = useState(false)
+  const [modalType, setModalType] = useState('raw') // 'raw' | 'post' | 'tail'
+  const [modalLogY, setModalLogY] = useState(false)
+  const [modalNormY, setModalNormY] = useState(false)
+  const [modalTailPct, setModalTailPct] = useState(99)
+  const modalCanvasRef = useRef(null)
+
   useEffect(() => {
     const img = new Image()
     img.src = `${BASE}preview.png`
@@ -66,6 +74,7 @@ export default function App() {
   useEffect(() => { draw() }, [scale, offset])
   useEffect(() => { updateVisibleHistogram() }, [scale, offset, intensity, minCut, maxCut, stretch, invert, maskBelowMin, maskAboveMax])
   useEffect(() => { if (hist) { setTimeout(() => { renderHist(); renderHistDisplay(); renderHistTail() }, 0) } }, [tailPct, hist])
+  useEffect(() => { if (modalOpen) { setTimeout(renderModalChart, 0) } }, [modalOpen, modalType, modalLogY, modalNormY, modalTailPct, hist, histDisplay])
   useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK, minCut, maxCut, maskBelowMin, maskAboveMax])
   useEffect(() => { renderColorbar() }, [colormap, invert, stretch, gamma, asinhK, minCut, maxCut])
 
@@ -461,10 +470,9 @@ export default function App() {
     const counts = hist.counts
     const thr = percentileFromCounts(counts, tailPct)
     const thrIdx = Math.max(0, Math.min(255, Math.round(thr*255)))
-    // build tail-only counts
-    const tcounts = new Array(256).fill(0)
-    let tailTotal = 0
-    for (let i=thrIdx;i<256;i++) { tcounts[i] = counts[i]; tailTotal += counts[i] }
+    // build tail-only counts and rescale x to fill width
+    const tcounts = counts.slice(thrIdx)
+    const tailTotal = tcounts.reduce((a,b)=>a+b,0)
     setHistTail({ counts: tcounts, thrIdx, tailTotal })
 
     const ctx = el.getContext('2d')
@@ -474,15 +482,16 @@ export default function App() {
     const max = Math.max(1, ...tcounts)
     ctx.fillStyle = '#203047'; ctx.fillRect(0,0,W,H)
     ctx.strokeStyle = '#3dd68c'; ctx.beginPath()
-    for (let i=0;i<256;i++) {
-      const x = (i/255)*W
-      const y = H - (tcounts[i]/max)*(H-20)
-      if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
+    const nBins = Math.max(1, tcounts.length - 1)
+    for (let j=0;j<tcounts.length;j++) {
+      const x = (j/nBins)*W
+      const y = H - (tcounts[j]/max)*(H-20)
+      if (j===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
     }
     ctx.stroke()
     // threshold marker
     ctx.strokeStyle = '#9aa4b2'; ctx.beginPath();
-    const tx = (thrIdx/255)*W; ctx.moveTo(tx,0); ctx.lineTo(tx,H); ctx.stroke()
+    const tx = 0; ctx.moveTo(tx,0); ctx.lineTo(tx,H); ctx.stroke()
     ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
     ctx.fillText(`Upper tail (>= P${tailPct})`, 8, 14)
     // stats in physical units limited to tail
@@ -491,12 +500,60 @@ export default function App() {
       // compute mean in tail
       let sum = 0
       let cum = 0
-      for (let i=thrIdx;i<256;i++) { sum += (i/255)*tcounts[i]; cum += tcounts[i] }
+      for (let i=0;i<tcounts.length;i++) { const idx = thrIdx + i; sum += (idx/255)*tcounts[i]; cum += tcounts[i] }
       const meanT = sum / Math.max(1, cum)
       const meanPhys = physMin + (physMax-physMin)*meanT
       const thrPhys = physMin + (physMax-physMin)* (thrIdx/255)
       ctx.fillText(`>= ${thrPhys.toExponential(2)}; mean ${meanPhys.toExponential(2)} (${(cum/Math.max(1,counts.reduce((a,b)=>a+b,0))*100).toFixed(2)}% pixels)`, 8, 28)
     }
+  }
+
+  function openModal(type) {
+    setModalType(type)
+    setModalTailPct(type==='tail' ? tailPct : 99)
+    setModalLogY(false)
+    setModalNormY(false)
+    setModalOpen(true)
+  }
+
+  function renderModalChart() {
+    const cvs = modalCanvasRef.current
+    if (!cvs) return
+    const ctx = cvs.getContext('2d')
+    const W = cvs.width = 640
+    const H = cvs.height = 260
+    ctx.clearRect(0,0,W,H)
+    ctx.fillStyle = '#0f131a'; ctx.fillRect(0,0,W,H)
+    let counts = null
+    if (modalType === 'raw') counts = hist?.counts
+    if (modalType === 'post') counts = histDisplay?.counts
+    if (modalType === 'tail') {
+      const base = hist?.counts
+      if (base) {
+        const thr = percentileFromCounts(base, modalTailPct)
+        const thrIdx = Math.max(0, Math.min(255, Math.round(thr*255)))
+        counts = base.slice(thrIdx)
+      }
+    }
+    if (!counts) return
+    let viewCounts = counts.slice()
+    const total = viewCounts.reduce((a,b)=>a+b,0)
+    const max = modalNormY ? Math.max(1, ...viewCounts.map(c => c/Math.max(1,total))) : Math.max(1, ...viewCounts)
+    ctx.strokeStyle = '#7aa2ff';
+    ctx.beginPath()
+    const nBins = Math.max(1, viewCounts.length - 1)
+    for (let i=0;i<viewCounts.length;i++) {
+      const x = (i/nBins)*W
+      let v = modalNormY ? (viewCounts[i]/Math.max(1,total)) : viewCounts[i]
+      if (modalLogY) v = Math.log10(1 + v)
+      const vmax = modalLogY ? Math.log10(1 + (modalNormY ? (Math.max(...viewCounts)/Math.max(1,total)) : Math.max(...viewCounts))) : max
+      const y = H - (v/Math.max(1e-12, vmax))*(H-30)
+      if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
+    }
+    ctx.stroke()
+    ctx.fillStyle = '#e6edf3'; ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
+    const title = modalType==='raw' ? 'Raw (visible region)' : modalType==='post' ? 'Post window/stretch (visible)' : `Upper tail (>= P${modalTailPct})`
+    ctx.fillText(title, 10, 16)
   }
 
   // Slider handlers (0..100 UI mapped to 0..1)
@@ -588,9 +645,9 @@ export default function App() {
           </div>
           <div className="section">
             <div className="section-title">Brightness Distribution</div>
-            <canvas ref={histCanvasRef} />
+            <canvas ref={histCanvasRef} onClick={() => openModal('raw')} style={{cursor:'zoom-in'}} />
             <div className="section-title" style={{marginTop:8}}>Post-Scaling Distribution</div>
-            <canvas id="hist-display" />
+            <canvas id="hist-display" onClick={() => openModal('post')} style={{cursor:'zoom-in'}} />
             <div className="section-title" style={{marginTop:8}}>Upper Tail (bright sources)</div>
             <div className="line">
               <label>Pctl
@@ -603,7 +660,7 @@ export default function App() {
                 </select>
               </label>
             </div>
-            <canvas id="hist-tail" />
+            <canvas id="hist-tail" onClick={() => openModal('tail')} style={{cursor:'zoom-in'}} />
           </div>
         </aside>
       </main>
@@ -651,6 +708,30 @@ export default function App() {
           </div>
         </div>
       </footer>
+      {modalOpen && (
+        <div className="modal-overlay" onClick={() => setModalOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div className="section-title">Chart Viewer</div>
+              <button className="sidebtn" onClick={() => setModalOpen(false)} aria-label="Close">Close</button>
+            </div>
+            <div className="line" style={{marginBottom:8}}>
+              <label className="line"><input type="checkbox" checked={modalLogY} onChange={e => setModalLogY(e.target.checked)} /> Log Y</label>
+              <label className="line"><input type="checkbox" checked={modalNormY} onChange={e => setModalNormY(e.target.checked)} /> Normalize</label>
+              {modalType==='tail' && (
+                <label className="line">Tail Pctl
+                  <input type="range" min="90" max="99.9" step="0.1" value={modalTailPct} onChange={e => setModalTailPct(parseFloat(e.target.value))} />
+                  <span className="val">{modalTailPct}%</span>
+                </label>
+              )}
+              <button className="sidebtn" onClick={() => {
+                const c = modalCanvasRef.current; if (!c) return; const a = document.createElement('a'); a.href = c.toDataURL('image/png'); a.download = 'chart.png'; a.click();
+              }}>Export PNG</button>
+            </div>
+            <canvas ref={modalCanvasRef} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
