@@ -16,18 +16,24 @@ export default function App() {
   const meta = useMetadata()
   const canvasRef = useRef(null)
   const colorCanvasRef = useRef(null)
+  const histCanvasRef = useRef(null)
+  const colorbarRef = useRef(null)
+  const imgRef = useRef(null)
+
+  const [intensity, setIntensity] = useState(null)
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [drag, setDrag] = useState(null)
-  const imgRef = useRef(null)
-  const [intensity, setIntensity] = useState(null)
+  const [cursor, setCursor] = useState({ x: null, y: null, ra: null, dec: null })
 
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [rightOpen, setRightOpen] = useState(true)
   const [colormap, setColormap] = useState('grayscale')
   const [invert, setInvert] = useState(false)
-  const [stretch, setStretch] = useState('linear')
+  const [stretch, setStretch] = useState('linear') // linear|log|sqrt|asinh|gamma
   const [gamma, setGamma] = useState(1.0)
   const [asinhK, setAsinhK] = useState(0.1)
+  const [hist, setHist] = useState(null)
 
   useEffect(() => {
     const img = new Image()
@@ -50,6 +56,7 @@ export default function App() {
   }, [])
 
   useEffect(() => { draw() }, [scale, offset, colormap, invert, stretch, gamma, asinhK, intensity])
+  useEffect(() => { renderColorbar() }, [colormap, invert, stretch, gamma, asinhK])
 
   const cmaps = useMemo(() => ({
     grayscale: (t) => `rgb(${Math.round(t*255)},${Math.round(t*255)},${Math.round(t*255)})`,
@@ -116,6 +123,33 @@ export default function App() {
     return cc
   }
 
+  function imgPixelFromClient(clientX, clientY) {
+    const canvas = canvasRef.current
+    const img = imgRef.current
+    if (!canvas || !img) return null
+    const rect = canvas.getBoundingClientRect()
+    const x = clientX - rect.left
+    const y = clientY - rect.top
+    const cx = canvas.clientWidth / 2
+    const cy = canvas.clientHeight / 2
+    const ix = (x - cx - offset.x) / scale + img.width / 2
+    const iy = (y - cy - offset.y) / scale + img.height / 2
+    return { ix, iy }
+  }
+
+  function toRaDec(ix, iy) {
+    if (!meta?.wcs) return { ra: null, dec: null }
+    const { CRVAL1, CRVAL2, CRPIX1, CRPIX2, CDELT1, CDELT2 } = meta.wcs
+    const dec0 = (CRVAL2 || 0) * Math.PI / 180
+    const px = ix + 1
+    const py = iy + 1
+    const dra = ((px - (CRPIX1 || 0)) * (CDELT1 || 0)) / Math.max(1e-6, Math.cos(dec0))
+    const ddec = (py - (CRPIX2 || 0)) * (CDELT2 || 0)
+    const ra = (CRVAL1 || 0) + dra
+    const dec = (CRVAL2 || 0) + ddec
+    return { ra, dec }
+  }
+
   const draw = () => {
     const canvas = canvasRef.current
     const ctx = canvas?.getContext('2d')
@@ -135,6 +169,46 @@ export default function App() {
     const colored = recolorIfNeeded()
     if (colored) ctx.drawImage(colored, -img.width/2, -img.height/2)
     else ctx.drawImage(img, -img.width/2, -img.height/2)
+
+    // overlays in image coords
+    // center marker
+    ctx.strokeStyle = '#93a1ff'
+    ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(-10,0); ctx.lineTo(10,0); ctx.moveTo(0,-10); ctx.lineTo(0,10); ctx.stroke()
+
+    // beam overlay (approximate)
+    const hdr = meta?.wcs || {}
+    const CDELT2 = Math.abs(hdr.CDELT2 || 0.0004166666)
+    const BMAJ = meta?.wcs?.BMAJ || meta?.BMAJ || 0
+    const BMIN = meta?.wcs?.BMIN || meta?.BMIN || 0
+    const BPA = meta?.wcs?.BPA || meta?.BPA || 0
+    if (BMAJ && BMIN) {
+      const pixA = (BMAJ / CDELT2)
+      const pixB = (BMIN / CDELT2)
+      const x0 = -img.width/2 + 40
+      const y0 = img.height/2 - 40
+      ctx.save(); ctx.translate(x0, y0); ctx.rotate(-BPA*Math.PI/180)
+      ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.ellipse(0,0,pixA/2,pixB/2,0,0,Math.PI*2); ctx.stroke(); ctx.restore()
+    }
+
+    // scale bar
+    const pxPerDeg = 1/Math.max(1e-9, Math.abs(hdr.CDELT2 || 0.0004166666))
+    const candidatesArcsec = [5,10,20,30,60,120,300,600]
+    let picked = 60
+    for (const a of candidatesArcsec) {
+      const wpx = (a/3600) * pxPerDeg
+      if (wpx >= 60 && wpx <= 180) { picked = a; break }
+    }
+    const wpx = (picked/3600) * pxPerDeg
+    const label = picked >= 60 ? `${Math.round(picked/60)} arcmin` : `${picked} arcsec`
+    const bx = img.width/2 - wpx - 40
+    const by = img.height/2 - 30
+    ctx.fillStyle = '#e6edf3'; ctx.strokeStyle = '#e6edf3'; ctx.lineWidth = 2
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + wpx, by); ctx.stroke()
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
+    ctx.textAlign = 'center'; ctx.fillText(label, bx + wpx/2, by - 6)
+
     ctx.restore()
   }
 
@@ -157,6 +231,64 @@ export default function App() {
     setOffset(o => ({ x: o.x + dx, y: o.y + dy }))
   }
   const onPointerUp = () => setDrag(null)
+  const onMouseMove = (e) => {
+    const p = imgPixelFromClient(e.clientX, e.clientY)
+    if (!p) return
+    const w = toRaDec(p.ix, p.iy)
+    setCursor({ x: p.ix, y: p.iy, ra: w.ra, dec: w.dec })
+  }
+
+  // histogram
+  useEffect(() => {
+    if (!intensity) return
+    const counts = new Array(256).fill(0)
+    for (let i=0;i<intensity.length;i++) counts[intensity[i]]++
+    setHist({ counts })
+    setTimeout(renderHist, 0)
+  }, [intensity])
+
+  function renderHist() {
+    const cvs = histCanvasRef.current
+    if (!cvs || !hist) return
+    const ctx = cvs.getContext('2d')
+    const W = cvs.width = 320
+    const H = cvs.height = 140
+    ctx.clearRect(0,0,W,H)
+    const counts = hist.counts
+    const max = Math.max(...counts)
+    ctx.fillStyle = '#203047'; ctx.fillRect(0,0,W,H)
+    ctx.strokeStyle = '#4ea1ff'; ctx.beginPath()
+    for (let i=0;i<256;i++) {
+      const x = (i/255)*W
+      const y = H - (counts[i]/max)*(H-20)
+      if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
+    }
+    ctx.stroke()
+    ctx.strokeStyle = '#54637a'; ctx.beginPath(); ctx.moveTo(0,H-0.5); ctx.lineTo(W,H-0.5); ctx.stroke()
+    ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
+    ctx.fillText('Histogram (pixel brightness)', 8, 14)
+    if (meta?.vmin !== undefined && meta?.vmax !== undefined) {
+      ctx.fillText(`${meta.vmin.toExponential(2)} to ${meta.vmax.toExponential(2)} ${meta.unit||''}`, 8, H-6)
+    }
+  }
+
+  function renderColorbar() {
+    const bar = colorbarRef.current
+    if (!bar) return
+    const W = bar.width = 240
+    const H = bar.height = 12
+    const ctx = bar.getContext('2d')
+    const map = cmaps[colormap] || cmaps.grayscale
+    for (let x=0;x<W;x++) {
+      let t = x/(W-1)
+      t = applyStretch(t)
+      if (invert) t = 1 - t
+      const rgb = map(t)
+      ctx.fillStyle = typeof rgb === 'string' ? rgb : '#000'
+      ctx.fillRect(x, 0, 1, H)
+    }
+    ctx.strokeStyle = '#1a2230'; ctx.strokeRect(0.5,0.5,W-1,H-1)
+  }
 
   return (
     <div className="page">
@@ -172,7 +304,7 @@ export default function App() {
           </div>
         )}
       </header>
-      <main className="viewport" onWheel={onWheel}>
+      <main className="viewport" onWheel={onWheel} onMouseMove={onMouseMove}>
         <aside className={"sidebar " + (sidebarOpen ? 'open' : 'closed')}>
           <div className="section">
             <div className="section-title">Color Map</div>
@@ -188,6 +320,7 @@ export default function App() {
               <option value="cool">Cool</option>
             </select>
             <label className="line"><input type="checkbox" checked={invert} onChange={e => setInvert(e.target.checked)} /> Invert</label>
+            <div className="line"><canvas ref={colorbarRef} /></div>
           </div>
           <div className="section">
             <div className="section-title">Stretch</div>
@@ -222,7 +355,20 @@ export default function App() {
         <div className="hud">
           <div>Scale: {scale.toFixed(2)}×</div>
           <div>Offset: {offset.x.toFixed(0)}, {offset.y.toFixed(0)}</div>
+          {cursor.ra != null && (
+            <div>RA {fmtRA(cursor.ra)} Dec {fmtDec(cursor.dec)}</div>
+          )}
         </div>
+        <aside className={"rpanel " + (rightOpen ? 'open' : 'closed')}>
+          <div className="rhead">
+            <div className="section-title">Analytics</div>
+            <button className="sidebtn" onClick={() => setRightOpen(s=>!s)} aria-label="Toggle right panel">{rightOpen? '›' : '‹'}</button>
+          </div>
+          <div className="section">
+            <div className="section-title">Brightness Distribution</div>
+            <canvas ref={histCanvasRef} />
+          </div>
+        </aside>
       </main>
       <footer className="foot">
         <div>
@@ -232,4 +378,23 @@ export default function App() {
     </div>
   )
 }
+
+function fmtRA(raDeg) {
+  if (raDeg == null || isNaN(raDeg)) return '--'
+  let ra = ((raDeg/15) % 24 + 24) % 24
+  const h = Math.floor(ra)
+  const m = Math.floor((ra - h)*60)
+  const s = ((ra - h)*60 - m)*60
+  return `${pad2(h)}h${pad2(m)}m${s.toFixed(2)}s`
+}
+function fmtDec(decDeg) {
+  if (decDeg == null || isNaN(decDeg)) return '--'
+  const sign = decDeg>=0 ? '+' : '-'
+  const a = Math.abs(decDeg)
+  const d = Math.floor(a)
+  const m = Math.floor((a - d)*60)
+  const s = ((a - d)*60 - m)*60
+  return `${sign}${pad2(d)}°${pad2(m)}′${s.toFixed(1)}″`
+}
+function pad2(n){ return String(n).padStart(2,'0') }
 
