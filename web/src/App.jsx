@@ -365,27 +365,39 @@ export default function App() {
     const H = cvs.height = 140
     ctx.clearRect(0,0,W,H)
     const counts = hist.counts
-    const max = Math.max(...counts)
-    ctx.fillStyle = '#203047'; ctx.fillRect(0,0,W,H)
+    const max = Math.max(1, ...counts)
+    // Axes
+    const ax = drawAxes(ctx, W, H, {
+      title: 'Histogram (pixel brightness)',
+      xTicks: meta?.vmin !== undefined && meta?.vmax !== undefined
+        ? [
+            { t: 0, label: meta.vmin.toExponential(1) },
+            { t: 0.5, label: ((meta.vmin+meta.vmax)/2).toExponential(1) },
+            { t: 1, label: meta.vmax.toExponential(1) }
+          ]
+        : [ {t:0,label:'0'}, {t:0.5,label:'0.5'}, {t:1,label:'1'} ],
+      yTicks: [ {v:0,label:'0'}, {v:max,label:shortNum(max)} ],
+      yMax: max,
+      xLabel: meta?.unit || '',
+      yLabel: 'count'
+    })
+    // Plot
     ctx.strokeStyle = '#4ea1ff'; ctx.beginPath()
     for (let i=0;i<256;i++) {
-      const x = (i/255)*W
-      const y = H - (counts[i]/max)*(H-20)
+      const x = ax.x + (i/255)*ax.w
+      const y = ax.y + ax.h - (counts[i]/max)*ax.h
       if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
     }
     ctx.stroke()
-    ctx.strokeStyle = '#54637a'; ctx.beginPath(); ctx.moveTo(0,H-0.5); ctx.lineTo(W,H-0.5); ctx.stroke()
-    ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
-    ctx.fillText('Histogram (pixel brightness)', 8, 14)
+    // Stats
+    const st = countsToStats(counts)
     if (meta?.vmin !== undefined && meta?.vmax !== undefined) {
-      ctx.fillText(`${meta.vmin.toExponential(2)} to ${meta.vmax.toExponential(2)} ${meta.unit||''}`, 8, H-6)
-    }
-    const stats = countsToStats(counts)
-    if (meta?.vmin !== undefined && meta?.vmax !== undefined) {
-      const meanPhys = meta.vmin + (meta.vmax-meta.vmin)*stats.mean
-      const medPhys = meta.vmin + (meta.vmax-meta.vmin)*stats.median
-      const stdPhys = (meta.vmax-meta.vmin)*stats.std
-      ctx.fillText(`mean ${meanPhys.toExponential(2)}, median ${medPhys.toExponential(2)}, std ${stdPhys.toExponential(2)}`, 8, 28)
+      const meanPhys = meta.vmin + (meta.vmax-meta.vmin)*st.mean
+      const medPhys = meta.vmin + (meta.vmax-meta.vmin)*st.median
+      const stdPhys = (meta.vmax-meta.vmin)*st.std
+      const unit = meta.unit || ''
+      ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
+      ctx.fillText(`mean ${meanPhys.toExponential(2)} ${unit}, median ${medPhys.toExponential(2)} ${unit}, std ${stdPhys.toExponential(2)} ${unit}`, ax.x, ax.y-4)
     }
   }
 
@@ -406,6 +418,47 @@ export default function App() {
       ctx.fillRect(x, 0, 1, H)
     }
     ctx.strokeStyle = '#1a2230'; ctx.strokeRect(0.5,0.5,W-1,H-1)
+  }
+
+  function drawAxes(ctx, W, H, { title, xTicks, yTicks, yMax, xLabel, yLabel }) {
+    const left = 40, right = 8, bottom = 22, top = 20
+    const x = left, y = top, w = W - left - right, h = H - top - bottom
+    ctx.fillStyle = '#203047'; ctx.fillRect(0,0,W,H)
+    // Title
+    if (title) { ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'; ctx.fillText(title, 8, 14) }
+    // Axes lines
+    ctx.strokeStyle = '#54637a'
+    ctx.beginPath(); ctx.moveTo(x, y+h+0.5); ctx.lineTo(x+w, y+h+0.5); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(x-0.5, y); ctx.lineTo(x-0.5, y+h); ctx.stroke()
+    // X ticks
+    ctx.fillStyle = '#9aa4b2'; ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+    if (xTicks) {
+      for (const tk of xTicks) {
+        const px = x + tk.t*w
+        ctx.beginPath(); ctx.moveTo(px, y+h); ctx.lineTo(px, y+h+4); ctx.stroke()
+        if (tk.label != null) ctx.fillText(String(tk.label), px, y+h+6)
+      }
+    }
+    // Y ticks
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle'
+    if (yTicks) {
+      for (const tk of yTicks) {
+        const py = y + h - (tk.v/Math.max(1e-12,yMax))*h
+        ctx.beginPath(); ctx.moveTo(x-4, py); ctx.lineTo(x, py); ctx.stroke()
+        if (tk.label != null) ctx.fillText(String(tk.label), x-6, py)
+      }
+    }
+    // Labels (simple)
+    if (xLabel) { ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(xLabel, x + w/2, y+h+18) }
+    if (yLabel) { /* omit rotated label for compactness */ }
+    return { x, y, w, h }
+  }
+
+  function shortNum(n){
+    if (n>=1e9) return (n/1e9).toFixed(1)+'e9'
+    if (n>=1e6) return (n/1e6).toFixed(1)+'e6'
+    if (n>=1e3) return (n/1e3).toFixed(1)+'e3'
+    return String(Math.round(n))
   }
 
   function applyPercentileWindow(pLo, pHi) {
@@ -438,20 +491,25 @@ export default function App() {
     const H = el.height = 140
     ctx.clearRect(0,0,W,H)
     const counts = histDisplay.counts
-    const max = Math.max(...counts)
-    ctx.fillStyle = '#203047'; ctx.fillRect(0,0,W,H)
+    const max = Math.max(1, ...counts)
+    const ax = drawAxes(ctx, W, H, {
+      title: 'Histogram (post window/stretch)',
+      xTicks: [ {t:0,label:'0'}, {t:0.5,label:'0.5'}, {t:1,label:'1'} ],
+      yTicks: [ {v:0,label:'0'}, {v:max,label:shortNum(max)} ],
+      yMax: max,
+      xLabel: 'display',
+      yLabel: 'count'
+    })
     ctx.strokeStyle = '#ffa94d'; ctx.beginPath()
     for (let i=0;i<256;i++) {
-      const x = (i/255)*W
-      const y = H - (counts[i]/max)*(H-20)
+      const x = ax.x + (i/255)*ax.w
+      const y = ax.y + ax.h - (counts[i]/max)*ax.h
       if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
     }
     ctx.stroke()
-    ctx.strokeStyle = '#54637a'; ctx.beginPath(); ctx.moveTo(0,H-0.5); ctx.lineTo(W,H-0.5); ctx.stroke()
-    ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
-    ctx.fillText('Histogram (post window/stretch)', 8, 14)
     const st = countsToStats(counts)
-    ctx.fillText(`mean ${st.mean.toFixed(3)}, median ${st.median.toFixed(3)}, std ${st.std.toFixed(3)}`, 8, 28)
+    ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
+    ctx.fillText(`mean ${st.mean.toFixed(3)} (disp), median ${st.median.toFixed(3)} (disp), std ${st.std.toFixed(3)} (disp)`, ax.x, ax.y-4)
   }
 
   function percentileFromCounts(counts, p) {
@@ -480,20 +538,27 @@ export default function App() {
     const H = el.height = 140
     ctx.clearRect(0,0,W,H)
     const max = Math.max(1, ...tcounts)
-    ctx.fillStyle = '#203047'; ctx.fillRect(0,0,W,H)
+    const ax = drawAxes(ctx, W, H, {
+      title: 'Upper tail (bright sources)',
+      xTicks: [ {t:0,label:(meta?.vmin!==undefined&&meta?.vmax!==undefined? (meta.vmin + (meta.vmax-meta.vmin)*(thrIdx/255)).toExponential(1):'thr')}, {t:1,label:(meta?.vmax!==undefined? meta.vmax.toExponential(1):'max')} ],
+      yTicks: [ {v:0,label:'0'}, {v:max,label:shortNum(max)} ],
+      yMax: max,
+      xLabel: meta?.unit || '',
+      yLabel: 'count'
+    })
     ctx.strokeStyle = '#3dd68c'; ctx.beginPath()
     const nBins = Math.max(1, tcounts.length - 1)
     for (let j=0;j<tcounts.length;j++) {
-      const x = (j/nBins)*W
-      const y = H - (tcounts[j]/max)*(H-20)
+      const x = ax.x + (j/nBins)*ax.w
+      const y = ax.y + ax.h - (tcounts[j]/max)*ax.h
       if (j===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
     }
     ctx.stroke()
     // threshold marker
     ctx.strokeStyle = '#9aa4b2'; ctx.beginPath();
-    const tx = 0; ctx.moveTo(tx,0); ctx.lineTo(tx,H); ctx.stroke()
+    const tx = ax.x; ctx.moveTo(tx, ax.y); ctx.lineTo(tx, ax.y+ax.h); ctx.stroke()
     ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
-    ctx.fillText(`Upper tail (>= P${tailPct})`, 8, 14)
+    // Stats label moved below
     // stats in physical units limited to tail
     const physMin = meta?.vmin, physMax = meta?.vmax
     if (physMin !== undefined && physMax !== undefined && tailTotal > 0) {
@@ -504,7 +569,8 @@ export default function App() {
       const meanT = sum / Math.max(1, cum)
       const meanPhys = physMin + (physMax-physMin)*meanT
       const thrPhys = physMin + (physMax-physMin)* (thrIdx/255)
-      ctx.fillText(`>= ${thrPhys.toExponential(2)}; mean ${meanPhys.toExponential(2)} (${(cum/Math.max(1,counts.reduce((a,b)=>a+b,0))*100).toFixed(2)}% pixels)`, 8, 28)
+      const unit = meta.unit || ''
+      ctx.fillText(`>= ${thrPhys.toExponential(2)} ${unit}; mean ${meanPhys.toExponential(2)} ${unit} (${(cum/Math.max(1,counts.reduce((a,b)=>a+b,0))*100).toFixed(2)}% pixels)`, ax.x, ax.y-4)
     }
   }
 
