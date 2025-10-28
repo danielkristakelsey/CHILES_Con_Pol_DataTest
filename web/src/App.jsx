@@ -35,8 +35,10 @@ export default function App() {
   const [gamma, setGamma] = useState(1.0)
   const [asinhK, setAsinhK] = useState(0.1)
   const [hist, setHist] = useState(null)
+  const [histDisplay, setHistDisplay] = useState(null)
   const [minCut, setMinCut] = useState(0.0)   // 0..1 of 8-bit scale
   const [maxCut, setMaxCut] = useState(1.0)   // 0..1 of 8-bit scale
+  const [maskBelowMin, setMaskBelowMin] = useState(false)
 
   useEffect(() => {
     const img = new Image()
@@ -59,8 +61,8 @@ export default function App() {
   }, [])
 
   useEffect(() => { draw() }, [scale, offset])
-  useEffect(() => { updateVisibleHistogram() }, [scale, offset, intensity])
-  useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK, minCut, maxCut])
+  useEffect(() => { updateVisibleHistogram() }, [scale, offset, intensity, minCut, maxCut, stretch, invert, maskBelowMin])
+  useEffect(() => { recomputeColor() }, [intensity, colormap, invert, stretch, gamma, asinhK, minCut, maxCut, maskBelowMin])
   useEffect(() => { renderColorbar() }, [colormap, invert, stretch, gamma, asinhK, minCut, maxCut])
 
   const cmaps = useMemo(() => ({
@@ -97,7 +99,7 @@ export default function App() {
       colorCanvasRef.current.width = w
       colorCanvasRef.current.height = h
     }
-    const key = `${colormap}|${invert?'1':'0'}|${stretch}|${gamma}|${asinhK}|${minCut.toFixed(3)}|${maxCut.toFixed(3)}|${w}x${h}`
+    const key = `${colormap}|${invert?'1':'0'}|${stretch}|${gamma}|${asinhK}|${minCut.toFixed(3)}|${maxCut.toFixed(3)}|${maskBelowMin?'1':'0'}|${w}x${h}`
     if (colorKeyRef.current === key) return
     colorKeyRef.current = key
     const cc = colorCanvasRef.current
@@ -106,12 +108,17 @@ export default function App() {
     const outData = out.data
     const map = cmaps[colormap] || cmaps.grayscale
     // Build 256-color LUT once (includes min/max cuts)
-    const lut = new Uint8Array(256*3)
+    const lut = new Uint8Array(256*4)
     for (let v=0; v<256; v++) {
       let t = v/255
       // apply min/max window
       t = (t - minCut) / Math.max(1e-6, (maxCut - minCut))
-      if (t < 0) t = 0; if (t > 1) t = 1
+      let alpha = 255
+      if (t <= 0) {
+        if (maskBelowMin) { alpha = 0; t = 0 }
+        else { t = 0 }
+      }
+      if (t >= 1) t = 1
       t = applyStretch(t)
       if (invert) t = 1 - t
       const rgb = map(t)
@@ -129,16 +136,16 @@ export default function App() {
         const m = c.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/)
         if (m) { r = +m[1]; g = +m[2]; b = +m[3] }
       }
-      const idx = v*3; lut[idx]=r; lut[idx+1]=g; lut[idx+2]=b
+      const idx = v*4; lut[idx]=r; lut[idx+1]=g; lut[idx+2]=b; lut[idx+3]=alpha
     }
     // Map intensities via LUT
     for (let i=0,j=0; j<intens.length; j++, i+=4) {
       const v = intens[j]
-      const li = v*3
+      const li = v*4
       outData[i] = lut[li]
       outData[i+1] = lut[li+1]
       outData[i+2] = lut[li+2]
-      outData[i+3] = 255
+      outData[i+3] = lut[li+3]
     }
     cctx.putImageData(out, 0, 0)
     // request a redraw
@@ -284,14 +291,26 @@ export default function App() {
     const targetSamples = 160000
     const step = Math.max(1, Math.floor(Math.sqrt(approxPixels / targetSamples)))
     const counts = new Array(256).fill(0)
+    const dcounts = new Array(256).fill(0)
     for (let y = iy0; y <= iy1; y += step) {
       const row = y * iw
       for (let x = ix0; x <= ix1; x += step) {
-        counts[intens[row + x]]++
+        const v = intens[row + x]
+        counts[v]++
+        // post display pipeline
+        let t = v/255
+        t = (t - minCut) / Math.max(1e-6, (maxCut - minCut))
+        if (t <= 0) { if (maskBelowMin) continue; t = 0 }
+        if (t >= 1) t = 1
+        t = applyStretch(t)
+        if (invert) t = 1 - t
+        const b = Math.max(0, Math.min(255, Math.round(t*255)))
+        dcounts[b]++
       }
     }
     setHist({ counts })
-    setTimeout(renderHist, 0)
+    setHistDisplay({ counts: dcounts })
+    setTimeout(() => { renderHist(); renderHistDisplay() }, 0)
   }
 
   const onPointerDown = (e) => {
@@ -345,6 +364,13 @@ export default function App() {
     if (meta?.vmin !== undefined && meta?.vmax !== undefined) {
       ctx.fillText(`${meta.vmin.toExponential(2)} to ${meta.vmax.toExponential(2)} ${meta.unit||''}`, 8, H-6)
     }
+    const stats = countsToStats(counts)
+    if (meta?.vmin !== undefined && meta?.vmax !== undefined) {
+      const meanPhys = meta.vmin + (meta.vmax-meta.vmin)*stats.mean
+      const medPhys = meta.vmin + (meta.vmax-meta.vmin)*stats.median
+      const stdPhys = (meta.vmax-meta.vmin)*stats.std
+      ctx.fillText(`mean ${meanPhys.toExponential(2)}, median ${medPhys.toExponential(2)}, std ${stdPhys.toExponential(2)}`, 8, 28)
+    }
   }
 
   function renderColorbar() {
@@ -364,6 +390,44 @@ export default function App() {
       ctx.fillRect(x, 0, 1, H)
     }
     ctx.strokeStyle = '#1a2230'; ctx.strokeRect(0.5,0.5,W-1,H-1)
+  }
+
+  function countsToStats(counts) {
+    const total = counts.reduce((a,b)=>a+b,0)
+    if (!total) return { mean:0, median:0, std:0 }
+    let mean = 0
+    for (let i=0;i<256;i++) mean += (i/255)*counts[i]
+    mean /= total
+    let cum=0, median=0
+    for (let i=0;i<256;i++){ cum+=counts[i]; if (cum >= total/2){ median = i/255; break } }
+    let varsum=0
+    for (let i=0;i<256;i++){ const x=i/255; varsum += (x-mean)*(x-mean)*counts[i] }
+    const std = Math.sqrt(varsum/total)
+    return { mean, median, std }
+  }
+
+  function renderHistDisplay() {
+    const el = document.getElementById('hist-display')
+    if (!el || !histDisplay) return
+    const ctx = el.getContext('2d')
+    const W = el.width = 320
+    const H = el.height = 140
+    ctx.clearRect(0,0,W,H)
+    const counts = histDisplay.counts
+    const max = Math.max(...counts)
+    ctx.fillStyle = '#203047'; ctx.fillRect(0,0,W,H)
+    ctx.strokeStyle = '#ffa94d'; ctx.beginPath()
+    for (let i=0;i<256;i++) {
+      const x = (i/255)*W
+      const y = H - (counts[i]/max)*(H-20)
+      if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y)
+    }
+    ctx.stroke()
+    ctx.strokeStyle = '#54637a'; ctx.beginPath(); ctx.moveTo(0,H-0.5); ctx.lineTo(W,H-0.5); ctx.stroke()
+    ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial'
+    ctx.fillText('Histogram (post window/stretch)', 8, 14)
+    const st = countsToStats(counts)
+    ctx.fillText(`mean ${st.mean.toFixed(3)}, median ${st.median.toFixed(3)}, std ${st.std.toFixed(3)}`, 8, 28)
   }
 
   // Slider handlers (0..100 UI mapped to 0..1)
@@ -456,6 +520,8 @@ export default function App() {
           <div className="section">
             <div className="section-title">Brightness Distribution</div>
             <canvas ref={histCanvasRef} />
+            <div className="section-title" style={{marginTop:8}}>Post-Scaling Distribution</div>
+            <canvas id="hist-display" />
           </div>
         </aside>
       </main>
@@ -473,10 +539,29 @@ export default function App() {
               <span className="val">{Math.round(maxCut*100)}%</span>
             </label>
             {meta?.vmin !== undefined && meta?.vmax !== undefined && (
-              <span className="val">
-                [{(meta.vmin + (meta.vmax-meta.vmin)*minCut).toExponential(2)} … {(meta.vmax - (meta.vmax-meta.vmin)*(1-maxCut)).toExponential(2)} {meta.unit||''}]
-              </span>
+              <>
+                <label>Min value
+                  <input type="number" step="any" value={(meta.vmin + (meta.vmax-meta.vmin)*minCut)} onChange={e => {
+                    const v = parseFloat(e.target.value)
+                    if (!isNaN(v)) {
+                      const nc = (v - meta.vmin)/Math.max(1e-12,(meta.vmax-meta.vmin))
+                      onMinCutChange(Math.round(100*Math.max(0,Math.min(1,nc))))
+                    }
+                  }} />
+                </label>
+                <label>Max value
+                  <input type="number" step="any" value={(meta.vmin + (meta.vmax-meta.vmin)*maxCut)} onChange={e => {
+                    const v = parseFloat(e.target.value)
+                    if (!isNaN(v)) {
+                      const nc = (v - meta.vmin)/Math.max(1e-12,(meta.vmax-meta.vmin))
+                      onMaxCutChange(Math.round(100*Math.max(0,Math.min(1,nc))))
+                    }
+                  }} />
+                </label>
+                <span className="val">{meta.unit||''}</span>
+              </>
             )}
+            <label className="line"><input type="checkbox" checked={maskBelowMin} onChange={e => setMaskBelowMin(e.target.checked)} /> Mask below min</label>
           </div>
         </div>
       </footer>

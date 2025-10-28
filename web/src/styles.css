@@ -37,3 +37,4 @@ html, body, #root {
 .bottom-controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
 .bottom-controls .line { gap: 10px; }
 .bottom-controls input[type="range"] { width: 160px; }
+.bottom-controls input[type="number"] { width: 140px; background: #121826; color: #e6edf3; border: 1px solid #1a2230; border-radius: 6px; padding: 4px 6px; }
